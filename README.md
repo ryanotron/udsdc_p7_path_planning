@@ -1,4 +1,11 @@
 # CarND-Path-Planning-Project
+
+Forked from starter code in [https://github.com/udacity/CarND-Path-Planning-Project](https://github.com/udacity/CarND-Path-Planning-Project).
+
+Spline library from [https://kluge.in-chemnitz.de/opensource/spline](https://kluge.in-chemnitz.de/opensource/spline).
+
+Spline 
+
 Self-Driving Car Engineer Nanodegree Program
    
 ### Simulator.
