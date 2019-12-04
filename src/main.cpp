@@ -93,33 +93,159 @@ int main() {
 
                     json msgJson;
 
-                    vector<double> next_x_vals;
-                    vector<double> next_y_vals;
-
                     /**
                      * TODO: define a path made up of (x,y) points that the car will visit
                      *   sequentially every .02 seconds
                      */
 
-                    cout << "new cycle: " << car_s << ", " << car_d << endl;
-                    double v_max = 0.5 * 50.0 * 1609.34 / 3600;
-                    double t_horz = 1.0;
+//                    cout << "new cycle: " << car_s << ", " << car_d << endl;
+                    double v_ref = 0.80 * 50.0 * 1609.34 / 3600;
+                    double t_horz = 0.5;
                     double dt = 20.0e-3;
                     double lane = 1;
 
                     int N = (int) (t_horz/dt);
 
-                    double next_s = car_s;
                     double next_d = lane*4 + 2;
-                    vector<double> nxy;
-                    for (int i = 0; i < N; i++) {
-                        next_s += v_max*dt;
-                        nxy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                        next_x_vals.push_back(nxy[0]);
-                        next_y_vals.push_back(nxy[1]);
-                        cout << "push " << nxy[0] << ", " << nxy[1] << endl;
+
+                    vector<double> anchors_x;
+                    vector<double> anchors_y;
+
+                    double x_ref, y_ref, yaw_ref;
+
+                    // prepare first two anchor points for spline
+                    // if we have enough previous path, use those,
+                    // otherwise, infer car pose just before current pose
+                    int prevsize = previous_path_x.size();
+                    if (prevsize >= 2) {
+                        x_ref = previous_path_x[prevsize-1];
+                        y_ref = previous_path_y[prevsize-1];
+
+                        double x_ref_prev = previous_path_x[prevsize-2];
+                        double y_ref_prev = previous_path_y[prevsize-2];
+
+                        yaw_ref = atan2(y_ref-y_ref_prev, x_ref-x_ref_prev);
+
+//                        anchors_x.push_back(x_ref_prev);
+                        anchors_x.push_back(x_ref);
+//                        anchors_y.push_back(y_ref_prev);
+                        anchors_y.push_back(y_ref);
                     }
-                    cout << "---" << endl;
+                    else {
+                        x_ref = car_x;
+                        y_ref = car_y;
+                        yaw_ref = deg2rad(car_yaw);
+
+                        double x_ref_prev = x_ref - v_ref*dt*cos(yaw_ref);
+                        double y_ref_prev = y_ref - v_ref*dt*sin(yaw_ref);
+
+//                        anchors_x.push_back(x_ref_prev);
+                        anchors_x.push_back(x_ref);
+//                        anchors_y.push_back(y_ref_prev);
+                        anchors_y.push_back(y_ref);
+                    }
+
+                    cout << prevsize << ": ref pose (x, y, yaw): (" << x_ref << ", "
+                         << y_ref << ", " << yaw_ref << ")" << endl;
+
+                    // add more anchors from several meters ahead in frenet frame
+                    // choose something that's guaranteed to be ahead of the last on the
+                    // previous path, so that the anchors x are monotonicly increasing
+                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
+                                                      map_waypoints_y);
+
+                    vector<double> anchor_xy0 = getXY(sd_ref[0]+5, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
+                    vector<double> anchor_xy1 = getXY(sd_ref[0]+10, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
+                    vector<double> anchor_xy2 = getXY(sd_ref[0]+15, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
+
+                    anchors_x.push_back(anchor_xy0[0]);
+                    anchors_x.push_back(anchor_xy1[0]);
+                    anchors_x.push_back(anchor_xy2[0]);
+
+                    anchors_y.push_back(anchor_xy0[1]);
+                    anchors_y.push_back(anchor_xy1[1]);
+                    anchors_y.push_back(anchor_xy2[1]);
+
+                    // transfer anchors to car-local reference frame
+                    for (int i = 0; i < anchors_x.size(); i++) {
+                        double x_loc = anchors_x[i] - x_ref;
+                        double y_loc = anchors_y[i] - y_ref;
+
+                        x_loc = cos(0-yaw_ref)*x_loc - sin(0-yaw_ref)*y_loc;
+                        y_loc = sin(0-yaw_ref)*x_loc + cos(0-yaw_ref)*y_loc;
+
+                        anchors_x[i] = x_loc;
+                        anchors_y[i] = y_loc;
+                    }
+
+                    // setup spline
+                    tk::spline spl;
+                    spl.set_points(anchors_x, anchors_y);
+
+                    // setup next waypoints
+                    // start with remaining previous waypoints,
+                    // then add new ones from the spline
+                    vector<double> next_x_vals;
+                    vector<double> next_y_vals;
+
+                    for (int i = 0; i < prevsize; i++) {
+                        next_x_vals.push_back(previous_path_x[i]);
+                        next_y_vals.push_back(previous_path_y[i]);
+                    }
+
+                    // new waypoints from spline, each about v_ref*dt apart
+                    // keep adding until we have N total waypoints
+                    // remember: N was chosen so that we plan until a time horizon,
+                    // assuming the car is moving at max speed
+                    double xi = 0.0;
+                    double yi = 0.0;
+                    double psi = 0.0;
+                    for (int i = 1; i <= N-prevsize; i++) {
+                        double xf = xi + v_ref*dt*cos(psi);
+                        double yf = spl(xf);
+
+                        // transform to global frame
+                        double xf_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf;
+                        double yf_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf;
+
+                        xf_glo += x_ref;
+                        yf_glo += y_ref;
+
+                        next_x_vals.push_back(xf_glo);
+                        next_y_vals.push_back(yf_glo);
+
+                        // setup heading for next iteration
+                        psi = atan2(yf-yi, xf-xi);
+                        xi = xf;
+                        yi = yf;
+                    }
+
+//                    double xi, yi, xf, yf;
+//                    xi = 0;
+//                    yi = 0;
+//                    xf = 5;
+//                    yf = spl(xf);
+
+//                    double distf = distance(xi, yi, xf, yf);
+//                    double div = distf/(dt*v_ref);
+
+//                    for (int i = 1; i <= N-prevsize; i++) {
+//                        xf = xi + distf/div;
+//                        yf = spl(xf);
+
+//                        xi = xf;
+
+//                        // transfer back to global frame
+//                        double x_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf + x_ref;
+//                        double y_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf + y_ref;
+
+//                        next_x_vals.push_back(x_glo);
+//                        next_y_vals.push_back(y_glo);
+//                    }
+
 
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
