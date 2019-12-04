@@ -99,8 +99,10 @@ int main() {
                      */
 
 //                    cout << "new cycle: " << car_s << ", " << car_d << endl;
-                    double v_ref = 0.80 * 50.0 * 1609.34 / 3600;
-                    double t_horz = 1.0;
+                    double v_max = 0.90 * 50.0 * 1609.34 / 3600;
+                    double jerk_max = 100;
+                    double v_ref;
+                    double t_horz = 0.5;
                     double dt = 20.0e-3;
                     double lane = 1;
 
@@ -126,6 +128,8 @@ int main() {
 
                         yaw_ref = atan2(y_ref-y_ref_prev, x_ref-x_ref_prev);
 
+                        v_ref = distance(x_ref, y_ref, x_ref_prev, y_ref_prev)/dt;
+
                         anchors_x.push_back(previous_path_x[0]);
                         anchors_x.push_back(x_ref);
                         anchors_y.push_back(previous_path_y[0]);
@@ -135,6 +139,9 @@ int main() {
                         x_ref = car_x;
                         y_ref = car_y;
                         yaw_ref = deg2rad(car_yaw);
+
+                        v_ref = car_speed;
+                        cout << "speed [m/s]?: " << car_speed << endl;
 
                         double x_ref_prev = x_ref - cos(yaw_ref);
                         double y_ref_prev = y_ref - sin(yaw_ref);
@@ -219,7 +226,14 @@ int main() {
                     double yi = 0.0;
                     double psi = 0.0;
                     for (int i = 1; i <= N-prevsize; i++) {
-                        double xf = xi + v_ref*dt*cos(psi);
+                        double dv = 0.5*jerk_max*dt*dt;
+                        double v_ave = v_ref;
+                        if (v_ref + dv < v_max) {
+                            v_ave = v_ref + 0.5*dv;
+                            v_ref += dv;
+                        }
+
+                        double xf = xi + v_ave*dt*cos(psi);
                         double yf = spl(xf);
 
                         // transform to global frame
