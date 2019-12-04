@@ -89,7 +89,8 @@ int main() {
 
                     // Sensor Fusion Data, a list of all other cars on the same side
                     //   of the road.
-                    auto sensor_fusion = j[1]["sensor_fusion"];
+//                    auto sensor_fusion = j[1]["sensor_fusion"];
+                    vector< vector<double> > sensor_fusion = j[1]["sensor_fusion"];
 
                     json msgJson;
 
@@ -100,13 +101,59 @@ int main() {
 
 //                    cout << "new cycle: " << car_s << ", " << car_d << endl;
                     double v_max = 0.90 * 50.0 * 1609.34 / 3600;
-                    double jerk_max = 100;
+                    double v_target = v_max;
+                    double jerk_max = 1000;
+                    double dist_min = 30; // minimum distance to car ahead before slowing down
                     double v_ref;
                     double t_horz = 0.5;
                     double dt = 20.0e-3;
                     double lane = 1;
-
                     int N = (int) (t_horz/dt);
+
+                    // find closest car ahead in lane
+                    double last_s = map_waypoints_s[map_waypoints_s.size()-1];
+                    double mindist = last_s;
+                    vector<double> leadspec;
+                    bool found_lead = false;
+                    for (int i = 0; i < sensor_fusion.size(); i++) {
+                        auto carspec = sensor_fusion[i];
+                        double dee = carspec[6];
+
+                        // check for same lane,
+                        // then check for aheadness
+                        // then check for distance
+                        // finally, adjust speed reference if too close
+                        if ((dee >= lane*4) && (dee <= lane*4+4)) {
+                            double ess = carspec[5];
+
+                            if (ess > car_s) {
+                                cout << "relevant: ";
+                                for (int j = 0; j < carspec.size(); j++) {
+                                    cout << carspec[j] << " ";
+                                }
+                                cout << endl;
+
+                                double vx = carspec[3];
+                                double vy = carspec[4];
+                                double vee = sqrt(vx*vx + vy*vy);
+
+                                double ess_project = ess + vee*t_horz;
+                                double car_s_project = car_s + v_target*t_horz;
+
+                                if (ess_project - car_s_project < dist_min) {
+                                    double v_target_inter = (ess_project - dist_min - car_s)/t_horz;
+                                    cout << "close! " << ess_project - car_s_project << " ";
+                                    if (v_target_inter < 0) {
+                                        v_target_inter = vee;
+                                    }
+                                    if (v_target_inter < v_target) {
+                                        v_target = v_target_inter;
+                                        cout << "slowing down to " << v_target_inter << " " << v_target * 3.6 / 1.609 << endl;
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     double next_d = lane*4 + 2;
 
@@ -152,8 +199,8 @@ int main() {
                         anchors_y.push_back(y_ref);
                     }
 
-                    cout << prevsize << ": ref pose (x, y, yaw): (" << x_ref << ", "
-                         << y_ref << ", " << yaw_ref << ")" << endl;
+//                    cout << prevsize << ": ref pose (x, y, yaw): (" << x_ref << ", "
+//                         << y_ref << ", " << yaw_ref << ")" << endl;
 
                     // add more anchors from several meters ahead in frenet frame
                     // choose something that's guaranteed to be ahead of the last on the
@@ -228,9 +275,13 @@ int main() {
                     for (int i = 1; i <= N-prevsize; i++) {
                         double dv = 0.5*jerk_max*dt*dt;
                         double v_ave = v_ref;
-                        if (v_ref + dv < v_max) {
+                        if (v_ref < 1.05*v_target) {
                             v_ave = v_ref + 0.5*dv;
                             v_ref += dv;
+                        }
+                        else if (v_ref > 0.95*v_target) {
+                            v_ave = v_ref - 0.5*dv;
+                            v_ref -= dv;
                         }
 
                         double xf = xi + v_ave*dt*cos(psi);
