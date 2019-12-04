@@ -100,7 +100,7 @@ int main() {
 
 //                    cout << "new cycle: " << car_s << ", " << car_d << endl;
                     double v_ref = 0.80 * 50.0 * 1609.34 / 3600;
-                    double t_horz = 0.5;
+                    double t_horz = 1.0;
                     double dt = 20.0e-3;
                     double lane = 1;
 
@@ -126,9 +126,9 @@ int main() {
 
                         yaw_ref = atan2(y_ref-y_ref_prev, x_ref-x_ref_prev);
 
-//                        anchors_x.push_back(x_ref_prev);
+                        anchors_x.push_back(previous_path_x[0]);
                         anchors_x.push_back(x_ref);
-//                        anchors_y.push_back(y_ref_prev);
+                        anchors_y.push_back(previous_path_y[0]);
                         anchors_y.push_back(y_ref);
                     }
                     else {
@@ -136,12 +136,12 @@ int main() {
                         y_ref = car_y;
                         yaw_ref = deg2rad(car_yaw);
 
-                        double x_ref_prev = x_ref - v_ref*dt*cos(yaw_ref);
-                        double y_ref_prev = y_ref - v_ref*dt*sin(yaw_ref);
+                        double x_ref_prev = x_ref - cos(yaw_ref);
+                        double y_ref_prev = y_ref - sin(yaw_ref);
 
-//                        anchors_x.push_back(x_ref_prev);
+                        anchors_x.push_back(x_ref_prev);
                         anchors_x.push_back(x_ref);
-//                        anchors_y.push_back(y_ref_prev);
+                        anchors_y.push_back(y_ref_prev);
                         anchors_y.push_back(y_ref);
                     }
 
@@ -151,31 +151,46 @@ int main() {
                     // add more anchors from several meters ahead in frenet frame
                     // choose something that's guaranteed to be ahead of the last on the
                     // previous path, so that the anchors x are monotonicly increasing
-                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
-                                                      map_waypoints_y);
+//                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
+//                                                      map_waypoints_y);
+//                    cout << "car_s, s_ref " << car_s << ", " << sd_ref[0] << endl;
 
-                    vector<double> anchor_xy0 = getXY(sd_ref[0]+5, next_d, map_waypoints_s,
-                                                      map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy1 = getXY(sd_ref[0]+10, next_d, map_waypoints_s,
-                                                      map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy2 = getXY(sd_ref[0]+15, next_d, map_waypoints_s,
-                                                      map_waypoints_x, map_waypoints_y);
+//                    vector<double> anchor_xy0 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
+//                                                      map_waypoints_x, map_waypoints_y);
+//                    vector<double> anchor_xy1 = getXY(sd_ref[0]+60, next_d, map_waypoints_s,
+//                                                      map_waypoints_x, map_waypoints_y);
+//                    vector<double> anchor_xy2 = getXY(sd_ref[0]+90, next_d, map_waypoints_s,
+//                                                      map_waypoints_x, map_waypoints_y);
 
-                    anchors_x.push_back(anchor_xy0[0]);
-                    anchors_x.push_back(anchor_xy1[0]);
-                    anchors_x.push_back(anchor_xy2[0]);
+//                    anchors_x.push_back(anchor_xy0[0]);
+//                    anchors_x.push_back(anchor_xy1[0]);
+//                    anchors_x.push_back(anchor_xy2[0]);
 
-                    anchors_y.push_back(anchor_xy0[1]);
-                    anchors_y.push_back(anchor_xy1[1]);
-                    anchors_y.push_back(anchor_xy2[1]);
+//                    anchors_y.push_back(anchor_xy0[1]);
+//                    anchors_y.push_back(anchor_xy1[1]);
+//                    anchors_y.push_back(anchor_xy2[1]);
+
+                    // prepare anchors from closest map waypoints to reference
+                    // starting from one behind up to fourth ahead (so, five anchors)
+                    int next_wp = NextWaypoint(x_ref, y_ref, yaw_ref,
+                                               map_waypoints_x, map_waypoints_y);
+
+                    int mapsize = map_waypoints_x.size();
+                    for (int i = 1; i < 4; i++) {
+                        int idx = (next_wp + i + mapsize) % mapsize;
+                        vector<double> xy = getXY(map_waypoints_s[idx], next_d, map_waypoints_s,
+                                                  map_waypoints_x, map_waypoints_y);
+                        anchors_x.push_back(xy[0]);
+                        anchors_y.push_back(xy[1]);
+                    }
 
                     // transfer anchors to car-local reference frame
                     for (int i = 0; i < anchors_x.size(); i++) {
-                        double x_loc = anchors_x[i] - x_ref;
-                        double y_loc = anchors_y[i] - y_ref;
+                        double x_inter = anchors_x[i] - x_ref;
+                        double y_inter = anchors_y[i] - y_ref;
 
-                        x_loc = cos(0-yaw_ref)*x_loc - sin(0-yaw_ref)*y_loc;
-                        y_loc = sin(0-yaw_ref)*x_loc + cos(0-yaw_ref)*y_loc;
+                        double x_loc = cos(0-yaw_ref)*x_inter - sin(0-yaw_ref)*y_inter;
+                        double y_loc = sin(0-yaw_ref)*x_inter + cos(0-yaw_ref)*y_inter;
 
                         anchors_x[i] = x_loc;
                         anchors_y[i] = y_loc;
@@ -222,6 +237,12 @@ int main() {
                         xi = xf;
                         yi = yf;
                     }
+
+//                    cout << endl << "global waypoints" << endl;
+//                    for (int i = 0; i < next_x_vals.size(); i++) {
+//                        cout << i << ", " << next_x_vals[i] << ", " << next_y_vals[i] << endl;
+//                    }
+//                    cout << "***" << endl << endl;
 
 //                    double xi, yi, xf, yf;
 //                    xi = 0;

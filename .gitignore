@@ -1,3 +1,5 @@
 build/
+.ipynb_checkpoints/
 simulator
 CMakeLists.txt.user*
+*.ipynb
