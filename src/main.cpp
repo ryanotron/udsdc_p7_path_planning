@@ -105,7 +105,7 @@ int main() {
                     double jerk_max = 1000;
                     double dist_min = 30; // minimum distance to car ahead before slowing down
                     double v_ref;
-                    double t_horz = 0.5;
+                    double t_horz = 0.4;
                     double dt = 20.0e-3;
                     double lane = 1;
                     int N = (int) (t_horz/dt);
@@ -113,8 +113,8 @@ int main() {
                     // find closest car ahead in lane
                     double last_s = map_waypoints_s[map_waypoints_s.size()-1];
                     double mindist = last_s;
-                    vector<double> leadspec;
-                    bool found_lead = false;
+
+                    vector<double> v_target_lanes (3, v_max);
                     for (int i = 0; i < sensor_fusion.size(); i++) {
                         auto carspec = sensor_fusion[i];
                         double dee = carspec[6];
@@ -205,38 +205,39 @@ int main() {
                     // add more anchors from several meters ahead in frenet frame
                     // choose something that's guaranteed to be ahead of the last on the
                     // previous path, so that the anchors x are monotonicly increasing
-//                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
-//                                                      map_waypoints_y);
+                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
+                                                      map_waypoints_y);
 //                    cout << "car_s, s_ref " << car_s << ", " << sd_ref[0] << endl;
 
-//                    vector<double> anchor_xy0 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
-//                                                      map_waypoints_x, map_waypoints_y);
-//                    vector<double> anchor_xy1 = getXY(sd_ref[0]+60, next_d, map_waypoints_s,
-//                                                      map_waypoints_x, map_waypoints_y);
-//                    vector<double> anchor_xy2 = getXY(sd_ref[0]+90, next_d, map_waypoints_s,
-//                                                      map_waypoints_x, map_waypoints_y);
+                    vector<double> anchor_xy0 = getXY(sd_ref[0]+10, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
+                    vector<double> anchor_xy1 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
+                    vector<double> anchor_xy2 = getXY(sd_ref[0]+70, next_d, map_waypoints_s,
+                                                      map_waypoints_x, map_waypoints_y);
 
-//                    anchors_x.push_back(anchor_xy0[0]);
-//                    anchors_x.push_back(anchor_xy1[0]);
-//                    anchors_x.push_back(anchor_xy2[0]);
+                    anchors_x.push_back(anchor_xy0[0]);
+                    anchors_x.push_back(anchor_xy1[0]);
+                    anchors_x.push_back(anchor_xy2[0]);
 
-//                    anchors_y.push_back(anchor_xy0[1]);
-//                    anchors_y.push_back(anchor_xy1[1]);
-//                    anchors_y.push_back(anchor_xy2[1]);
+                    anchors_y.push_back(anchor_xy0[1]);
+                    anchors_y.push_back(anchor_xy1[1]);
+                    anchors_y.push_back(anchor_xy2[1]);
 
                     // prepare anchors from closest map waypoints to reference
                     // starting from one behind up to fourth ahead (so, five anchors)
-                    int next_wp = NextWaypoint(x_ref, y_ref, yaw_ref,
-                                               map_waypoints_x, map_waypoints_y);
+//                    int next_wp = NextWaypoint(x_ref, y_ref, yaw_ref,
+//                                               map_waypoints_x, map_waypoints_y);
 
-                    int mapsize = map_waypoints_x.size();
-                    for (int i = 1; i < 4; i++) {
-                        int idx = (next_wp + i + mapsize) % mapsize;
-                        vector<double> xy = getXY(map_waypoints_s[idx], next_d, map_waypoints_s,
-                                                  map_waypoints_x, map_waypoints_y);
-                        anchors_x.push_back(xy[0]);
-                        anchors_y.push_back(xy[1]);
-                    }
+//                    int mapsize = map_waypoints_x.size();
+//                    for (int i = 1; i < 4; i++) {
+//                        int idx = (next_wp + i + mapsize) % mapsize;
+//                        vector<double> xy = getXY(map_waypoints_s[idx], next_d, map_waypoints_s,
+//                                                  map_waypoints_x, map_waypoints_y);
+//                        anchors_x.push_back(xy[0]);
+//                        anchors_y.push_back(xy[1]);
+//                    }
+                    //------------------------------------------------
 
                     // transfer anchors to car-local reference frame
                     for (int i = 0; i < anchors_x.size(); i++) {
