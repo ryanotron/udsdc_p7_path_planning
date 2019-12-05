@@ -101,58 +101,125 @@ int main() {
 
 //                    cout << "new cycle: " << car_s << ", " << car_d << endl;
                     double v_max = 0.90 * 50.0 * 1609.34 / 3600;
-                    double v_target = v_max;
-                    double jerk_max = 1000;
+                    static double v_target = v_max;
+                    double jerk_max = 100;
                     double dist_min = 30; // minimum distance to car ahead before slowing down
                     double v_ref;
                     double t_horz = 0.4;
                     double dt = 20.0e-3;
-                    double lane = 1;
+                    static int lane = 1;
                     int N = (int) (t_horz/dt);
 
                     // find closest car ahead in lane
                     double last_s = map_waypoints_s[map_waypoints_s.size()-1];
                     double mindist = last_s;
-
                     vector<double> v_target_lanes (3, v_max);
+
                     for (int i = 0; i < sensor_fusion.size(); i++) {
                         auto carspec = sensor_fusion[i];
                         double dee = carspec[6];
 
-                        // check for same lane,
-                        // then check for aheadness
-                        // then check for distance
-                        // finally, adjust speed reference if too close
-                        if ((dee >= lane*4) && (dee <= lane*4+4)) {
-                            double ess = carspec[5];
+                        // find lane index of the car under consideration
+                        // and assume it's in rightmost lane if it happens to be
+                        // further right (offroading?)
+                        int carlane = (int) floor(dee/4);
+                        carlane = std::min(carlane, 2);
 
-                            if (ess > car_s) {
-                                cout << "relevant: ";
-                                for (int j = 0; j < carspec.size(); j++) {
-                                    cout << carspec[j] << " ";
+                        // Check if the car is ahead from us (in s).
+                        // Then calculate its distance after time horizon,
+                        // assuming we are in the same lane.
+                        // If it is shorter than the `dist_min` parameter,
+                        // calculate maximum speed we can have if we were behind it.
+                        // Register this speed in `v_target_lanes` vector.
+                        // If we can't run at max speed in this lane, check if we can
+                        // run faster in one of the adjacent lanes.
+                        // If yes, move there
+                        double ess = carspec[5];
+
+                        if (ess > car_s) {
+                            double vx = carspec[3];
+                            double vy = carspec[4];
+                            double vee = sqrt(vx*vx + vy*vy);
+
+                            double ess_expect = ess + vee*t_horz;
+                            double car_s_expect = car_s + v_target*t_horz;
+
+                            if (ess_expect - car_s_expect < dist_min) {
+                                double v_lane = (ess_expect - dist_min - car_s)/t_horz;
+                                if (v_lane < 0) {
+                                    v_lane = vee;
                                 }
-                                cout << endl;
-
-                                double vx = carspec[3];
-                                double vy = carspec[4];
-                                double vee = sqrt(vx*vx + vy*vy);
-
-                                double ess_project = ess + vee*t_horz;
-                                double car_s_project = car_s + v_target*t_horz;
-
-                                if (ess_project - car_s_project < dist_min) {
-                                    double v_target_inter = (ess_project - dist_min - car_s)/t_horz;
-                                    cout << "close! " << ess_project - car_s_project << " ";
-                                    if (v_target_inter < 0) {
-                                        v_target_inter = vee;
-                                    }
-                                    if (v_target_inter < v_target) {
-                                        v_target = v_target_inter;
-                                        cout << "slowing down to " << v_target_inter << " " << v_target * 3.6 / 1.609 << endl;
-                                    }
+                                if (v_lane < v_target_lanes[carlane]) {
+                                    v_target_lanes[carlane] = v_lane;
                                 }
                             }
                         }
+
+                        if (v_target_lanes[lane] < v_max) {
+//                            v_target = v_target_lanes[lane];
+
+                            int neighbours[2] = {-1, 1};
+                            int best_lane = lane;
+                            for (int i = 0; i < 2; i++) {
+                                int nix = lane + neighbours[i];
+                                if (nix >= 0 && nix <= 2) {
+                                    if (v_target_lanes[nix] > 1.1*v_target_lanes[lane]) {
+                                        best_lane = nix;
+//                                        v_target = v_target_lanes[nix];
+                                    }
+                                }
+                            }
+                            if (best_lane != lane) {
+                                cout << lane << ": ";
+                                for (int i = 0; i < v_target_lanes.size(); i++) {
+                                    cout << v_target_lanes[i]*3600.0/1609.34 << " ";
+                                }
+                                cout << endl;
+                                cout << "move to lane " << best_lane << " from " << lane << endl << endl;
+                            }
+
+                            lane = best_lane;
+                        }
+                        // Regardless of target lane, car speed reference follows actual lane.
+                        // We need this to not hit car ahead during lane change
+
+                        int actual_lane = (int) floor(car_d / 4);
+                        v_target = v_target_lanes[actual_lane];
+
+//                        // check for same lane,
+//                        // then check for aheadness
+//                        // then check for distance
+//                        // finally, adjust speed reference if too close
+//                        if ((dee >= lane*4) && (dee <= lane*4+4)) {
+//                            double ess = carspec[5];
+
+//                            if (ess > car_s) {
+//                                cout << "relevant: ";
+//                                for (int j = 0; j < carspec.size(); j++) {
+//                                    cout << carspec[j] << " ";
+//                                }
+//                                cout << endl;
+
+//                                double vx = carspec[3];
+//                                double vy = carspec[4];
+//                                double vee = sqrt(vx*vx + vy*vy);
+
+//                                double ess_project = ess + vee*t_horz;
+//                                double car_s_project = car_s + v_target*t_horz;
+
+//                                if (ess_project - car_s_project < dist_min) {
+//                                    double v_target_inter = (ess_project - dist_min - car_s)/t_horz;
+//                                    cout << "close! " << ess_project - car_s_project << " ";
+//                                    if (v_target_inter < 0) {
+//                                        v_target_inter = vee;
+//                                    }
+//                                    if (v_target_inter < v_target) {
+//                                        v_target = v_target_inter;
+//                                        cout << "slowing down to " << v_target_inter << " " << v_target * 3.6 / 1.609 << endl;
+//                                    }
+//                                }
+//                            }
+//                        }
                     }
 
                     double next_d = lane*4 + 2;
@@ -209,11 +276,11 @@ int main() {
                                                       map_waypoints_y);
 //                    cout << "car_s, s_ref " << car_s << ", " << sd_ref[0] << endl;
 
-                    vector<double> anchor_xy0 = getXY(sd_ref[0]+10, next_d, map_waypoints_s,
+                    vector<double> anchor_xy0 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy1 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
+                    vector<double> anchor_xy1 = getXY(sd_ref[0]+60, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy2 = getXY(sd_ref[0]+70, next_d, map_waypoints_s,
+                    vector<double> anchor_xy2 = getXY(sd_ref[0]+90, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
 
                     anchors_x.push_back(anchor_xy0[0]);
