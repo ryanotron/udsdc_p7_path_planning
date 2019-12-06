@@ -1,6 +1,7 @@
 #include <uWS/uWS.h>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
@@ -15,6 +16,8 @@ using std::string;
 using std::vector;
 using std::cout;
 using std::endl;
+using std::setprecision;
+using std::setw;
 
 int main() {
     uWS::Hub h;
@@ -89,7 +92,6 @@ int main() {
 
                     // Sensor Fusion Data, a list of all other cars on the same side
                     //   of the road.
-//                    auto sensor_fusion = j[1]["sensor_fusion"];
                     vector< vector<double> > sensor_fusion = j[1]["sensor_fusion"];
 
                     json msgJson;
@@ -100,19 +102,21 @@ int main() {
                      */
 
 //                    cout << "new cycle: " << car_s << ", " << car_d << endl;
-                    double v_max = 0.90 * 50.0 * 1609.34 / 3600;
+                    double max_s = 6945.554;
+                    double v_max = 0.95 * 50.0 * 1609.34 / 3600;
+//                    double jerk_max = 0.95*50;
+                    double accel_max = 0.95*10;
+
                     static double v_target = v_max;
-                    double jerk_max = 100;
-                    double dist_min = 30; // minimum distance to car ahead before slowing down
-                    double v_ref;
+                    static int lane = 1;
+
                     double t_horz = 0.4;
                     double dt = 20.0e-3;
-                    static int lane = 1;
+                    double dist_min = 4*v_max*t_horz; // minimum distance to car ahead before slowing down
+
+                    double v_ref;
                     int N = (int) (t_horz/dt);
 
-                    // find closest car ahead in lane
-                    double last_s = map_waypoints_s[map_waypoints_s.size()-1];
-                    double mindist = last_s;
                     vector<double> v_target_lanes (3, v_max);
 
                     for (int i = 0; i < sensor_fusion.size(); i++) {
@@ -135,92 +139,67 @@ int main() {
                         // run faster in one of the adjacent lanes.
                         // If yes, move there
                         double ess = carspec[5];
+                        double vx = carspec[3];
+                        double vy = carspec[4];
+                        double vee = sqrt(vx*vx + vy*vy);
 
-                        if (ess > car_s) {
-                            double vx = carspec[3];
-                            double vy = carspec[4];
-                            double vee = sqrt(vx*vx + vy*vy);
+                        double ess_expect = ess + vee*t_horz;
 
-                            double ess_expect = ess + vee*t_horz;
-                            double car_s_expect = car_s + v_target*t_horz;
-
-                            if (ess_expect - car_s_expect < dist_min) {
-                                double v_lane = (ess_expect - dist_min - car_s)/t_horz;
-                                if (v_lane < 0) {
-                                    v_lane = vee;
-                                }
-                                if (v_lane < v_target_lanes[carlane]) {
-                                    v_target_lanes[carlane] = v_lane;
-                                }
-                            }
+                        // Edge case: lead car is just across the lap,
+                        // and its projected pose is a small s,
+                        // while we are just before the lap, big s.
+                        // We want the calculation to say that the lead car
+                        // is ahead of us and relevant for lane speed calculation.
+                        // To detect this condition, all these must be true:
+                        // - excpected lead car pose is lower than our pose in s
+                        // - lead car pose + lap - our pose < our pose - lead car
+                        //   (absolute distance is shorter if we pretend
+                        //   the lap is longer)
+                        if ((ess_expect < car_s) && ((ess_expect + max_s - car_s) < (car_s - ess_expect))) {
+                            ess_expect += max_s;
                         }
 
-                        if (v_target_lanes[lane] < v_max) {
-//                            v_target = v_target_lanes[lane];
+                        if (ess_expect > car_s) {
+                            double v_lane = (ess_expect - dist_min - car_s)/t_horz;
+                            v_lane = std::max(v_lane, 0.0);
 
-                            int neighbours[2] = {-1, 1};
-                            int best_lane = lane;
-                            for (int i = 0; i < 2; i++) {
-                                int nix = lane + neighbours[i];
-                                if (nix >= 0 && nix <= 2) {
-                                    if (v_target_lanes[nix] > 1.1*v_target_lanes[lane]) {
-                                        best_lane = nix;
-//                                        v_target = v_target_lanes[nix];
-                                    }
-                                }
+                            if (v_lane < v_target_lanes[carlane]) {
+                                v_target_lanes[carlane] = v_lane;
                             }
-                            if (best_lane != lane) {
-                                cout << lane << ": ";
-                                for (int i = 0; i < v_target_lanes.size(); i++) {
-                                    cout << v_target_lanes[i]*3600.0/1609.34 << " ";
-                                }
-                                cout << endl;
-                                cout << "move to lane " << best_lane << " from " << lane << endl << endl;
-                            }
-
-                            lane = best_lane;
                         }
-                        // Regardless of target lane, car speed reference follows actual lane.
-                        // We need this to not hit car ahead during lane change
-
-                        int actual_lane = (int) floor(car_d / 4);
-                        v_target = v_target_lanes[actual_lane];
-
-//                        // check for same lane,
-//                        // then check for aheadness
-//                        // then check for distance
-//                        // finally, adjust speed reference if too close
-//                        if ((dee >= lane*4) && (dee <= lane*4+4)) {
-//                            double ess = carspec[5];
-
-//                            if (ess > car_s) {
-//                                cout << "relevant: ";
-//                                for (int j = 0; j < carspec.size(); j++) {
-//                                    cout << carspec[j] << " ";
-//                                }
-//                                cout << endl;
-
-//                                double vx = carspec[3];
-//                                double vy = carspec[4];
-//                                double vee = sqrt(vx*vx + vy*vy);
-
-//                                double ess_project = ess + vee*t_horz;
-//                                double car_s_project = car_s + v_target*t_horz;
-
-//                                if (ess_project - car_s_project < dist_min) {
-//                                    double v_target_inter = (ess_project - dist_min - car_s)/t_horz;
-//                                    cout << "close! " << ess_project - car_s_project << " ";
-//                                    if (v_target_inter < 0) {
-//                                        v_target_inter = vee;
-//                                    }
-//                                    if (v_target_inter < v_target) {
-//                                        v_target = v_target_inter;
-//                                        cout << "slowing down to " << v_target_inter << " " << v_target * 3.6 / 1.609 << endl;
-//                                    }
-//                                }
-//                            }
-//                        }
                     }
+
+                    cout << lane << ": " << setw(9) << setprecision(8) << car_s << " --- ";
+                    for (int i = 0; i < v_target_lanes.size(); i++) {
+                        cout << setw(6) << setprecision(5) << v_target_lanes[i]*3600.0/1609.34 << " ";
+                    }
+                    cout << endl;
+
+                    if (v_target_lanes[lane] < v_max) {
+                        int neighbours[2] = {-1, 1};
+                        int best_lane = lane;
+
+                        for (int i = 0; i < 2; i++) {
+                            int nix = lane + neighbours[i];
+                            if (nix >= 0 && nix <= 2) {
+                                if (v_target_lanes[nix] > 1.2*v_target_lanes[lane]) {
+                                    best_lane = nix;
+                                }
+                            }
+                        }
+
+                        if (best_lane != lane) {
+                            cout << "move to lane " << best_lane << " from " << lane << endl << endl;
+                        }
+
+                        lane = best_lane;
+                    }
+
+                    // Regardless of target lane, car speed reference follows actual lane.
+                    // We need this to not hit car ahead during lane change
+//                    int actual_lane = (int) floor(car_d / 4);
+//                    v_target = std::min(v_target_lanes[actual_lane], v_max);
+                    v_target = std::min(v_target_lanes[lane], v_max);
 
                     double next_d = lane*4 + 2;
 
@@ -255,7 +234,6 @@ int main() {
                         yaw_ref = deg2rad(car_yaw);
 
                         v_ref = car_speed;
-                        cout << "speed [m/s]?: " << car_speed << endl;
 
                         double x_ref_prev = x_ref - cos(yaw_ref);
                         double y_ref_prev = y_ref - sin(yaw_ref);
@@ -266,15 +244,11 @@ int main() {
                         anchors_y.push_back(y_ref);
                     }
 
-//                    cout << prevsize << ": ref pose (x, y, yaw): (" << x_ref << ", "
-//                         << y_ref << ", " << yaw_ref << ")" << endl;
-
                     // add more anchors from several meters ahead in frenet frame
                     // choose something that's guaranteed to be ahead of the last on the
                     // previous path, so that the anchors x are monotonicly increasing
                     vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
                                                       map_waypoints_y);
-//                    cout << "car_s, s_ref " << car_s << ", " << sd_ref[0] << endl;
 
                     vector<double> anchor_xy0 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
@@ -290,21 +264,6 @@ int main() {
                     anchors_y.push_back(anchor_xy0[1]);
                     anchors_y.push_back(anchor_xy1[1]);
                     anchors_y.push_back(anchor_xy2[1]);
-
-                    // prepare anchors from closest map waypoints to reference
-                    // starting from one behind up to fourth ahead (so, five anchors)
-//                    int next_wp = NextWaypoint(x_ref, y_ref, yaw_ref,
-//                                               map_waypoints_x, map_waypoints_y);
-
-//                    int mapsize = map_waypoints_x.size();
-//                    for (int i = 1; i < 4; i++) {
-//                        int idx = (next_wp + i + mapsize) % mapsize;
-//                        vector<double> xy = getXY(map_waypoints_s[idx], next_d, map_waypoints_s,
-//                                                  map_waypoints_x, map_waypoints_y);
-//                        anchors_x.push_back(xy[0]);
-//                        anchors_y.push_back(xy[1]);
-//                    }
-                    //------------------------------------------------
 
                     // transfer anchors to car-local reference frame
                     for (int i = 0; i < anchors_x.size(); i++) {
@@ -341,13 +300,15 @@ int main() {
                     double yi = 0.0;
                     double psi = 0.0;
                     for (int i = 1; i <= N-prevsize; i++) {
-                        double dv = 0.5*jerk_max*dt*dt;
+//                        double dv = 0.5*jerk_max*dt*dt;
+                        double dv = accel_max*dt;
                         double v_ave = v_ref;
-                        if (v_ref < 1.05*v_target) {
-                            v_ave = v_ref + 0.5*dv;
+                        if (v_ref < v_target) {
+                            v_ave = std::min(v_ref + 0.5*dv, v_max);
                             v_ref += dv;
+                            v_ref = std::min(v_ref, v_max);
                         }
-                        else if (v_ref > 0.95*v_target) {
+                        else if (v_ref > v_target) {
                             v_ave = v_ref - 0.5*dv;
                             v_ref -= dv;
                         }
@@ -370,36 +331,6 @@ int main() {
                         xi = xf;
                         yi = yf;
                     }
-
-//                    cout << endl << "global waypoints" << endl;
-//                    for (int i = 0; i < next_x_vals.size(); i++) {
-//                        cout << i << ", " << next_x_vals[i] << ", " << next_y_vals[i] << endl;
-//                    }
-//                    cout << "***" << endl << endl;
-
-//                    double xi, yi, xf, yf;
-//                    xi = 0;
-//                    yi = 0;
-//                    xf = 5;
-//                    yf = spl(xf);
-
-//                    double distf = distance(xi, yi, xf, yf);
-//                    double div = distf/(dt*v_ref);
-
-//                    for (int i = 1; i <= N-prevsize; i++) {
-//                        xf = xi + distf/div;
-//                        yf = spl(xf);
-
-//                        xi = xf;
-
-//                        // transfer back to global frame
-//                        double x_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf + x_ref;
-//                        double y_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf + y_ref;
-
-//                        next_x_vals.push_back(x_glo);
-//                        next_y_vals.push_back(y_glo);
-//                    }
-
 
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
