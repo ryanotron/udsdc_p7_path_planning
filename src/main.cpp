@@ -109,15 +109,17 @@ int main() {
 
                     static double v_target = v_max;
                     static int lane = 1;
+                    int prev_lane = lane;
 
-                    double t_horz = 0.4;
+                    double t_horz = 0.6;
                     double dt = 20.0e-3;
-                    double dist_min = 4*v_max*t_horz; // minimum distance to car ahead before slowing down
+//                    double dist_min = 3*v_max*t_horz; // minimum distance to car ahead before slowing down
+                    double dist_min = 30.0;
 
                     double v_ref;
                     int N = (int) (t_horz/dt);
 
-                    vector<double> v_target_lanes (3, v_max);
+                    vector<double> v_target_lanes (3, 5*v_max);
 
                     for (int i = 0; i < sensor_fusion.size(); i++) {
                         auto carspec = sensor_fusion[i];
@@ -158,11 +160,25 @@ int main() {
                         if ((ess_expect < car_s) && ((ess_expect + max_s - car_s) < (car_s - ess_expect))) {
                             ess_expect += max_s;
                         }
+                        if ((ess < car_s) && ((ess + max_s - car_s) < (car_s - ess))) {
+                            ess += max_s;
+                        }
 
-                        if (ess_expect > car_s) {
+                        // other car is already ahead, think about if it's safe to go behind it
+                        if (ess > car_s) {
                             double v_lane = (ess_expect - dist_min - car_s)/t_horz;
                             v_lane = std::max(v_lane, 0.0);
 
+                            if (v_lane < v_target_lanes[carlane]) {
+                                v_target_lanes[carlane] = v_lane;
+                            }
+                        }
+                        // other car is behind, but will be ahead, think about if it's safe to go in front of it
+                        else if (ess_expect > car_s) {
+                            double v_lane = (ess_expect + 0.5*dist_min - car_s)/t_horz;
+                            if (v_lane > v_max) {
+                                v_lane = 0.0;
+                            }
                             if (v_lane < v_target_lanes[carlane]) {
                                 v_target_lanes[carlane] = v_lane;
                             }
@@ -182,7 +198,7 @@ int main() {
                         for (int i = 0; i < 2; i++) {
                             int nix = lane + neighbours[i];
                             if (nix >= 0 && nix <= 2) {
-                                if (v_target_lanes[nix] > 1.2*v_target_lanes[lane]) {
+                                if (v_target_lanes[nix] > 1.5*v_target_lanes[lane]) {
                                     best_lane = nix;
                                 }
                             }
@@ -191,7 +207,7 @@ int main() {
                         if (best_lane != lane) {
                             cout << "move to lane " << best_lane << " from " << lane << endl << endl;
                         }
-
+                        prev_lane = lane;
                         lane = best_lane;
                     }
 
@@ -212,6 +228,10 @@ int main() {
                     // if we have enough previous path, use those,
                     // otherwise, infer car pose just before current pose
                     int prevsize = previous_path_x.size();
+                    if (lane != prev_lane) {
+//                        prevsize = 0;
+                        N = 2*N;
+                    }
                     if (prevsize >= 2) {
                         x_ref = previous_path_x[prevsize-1];
                         y_ref = previous_path_y[prevsize-1];
@@ -223,9 +243,11 @@ int main() {
 
                         v_ref = distance(x_ref, y_ref, x_ref_prev, y_ref_prev)/dt;
 
-                        anchors_x.push_back(previous_path_x[0]);
+//                        anchors_x.push_back(previous_path_x[0]);
+                        anchors_x.push_back(x_ref_prev);
                         anchors_x.push_back(x_ref);
-                        anchors_y.push_back(previous_path_y[0]);
+//                        anchors_y.push_back(previous_path_y[0]);
+                        anchors_y.push_back(y_ref_prev);
                         anchors_y.push_back(y_ref);
                     }
                     else {
@@ -288,10 +310,58 @@ int main() {
                     vector<double> next_y_vals;
 
                     for (int i = 0; i < prevsize; i++) {
+//                        cout << i << "/" << prevsize << " " << previous_path_x[i] << ", " << previous_path_y[i] << endl;
+                        try {
+                            double dumx = (double) previous_path_x[i] - 1.0;
+                            double dumy = (double) previous_path_y[i] - 1.0;
+//                            cout << dumx << ", " << dumy << endl;
+                        }
+                        catch (json::type_error& e) {
+                            cout << "NO!" << " " << e.what() << endl;
+                            continue;
+                        }
                         next_x_vals.push_back(previous_path_x[i]);
                         next_y_vals.push_back(previous_path_y[i]);
+
+                    }
+//                    cout << "prev path check" << endl;
+
+                    double x_project = 30.0;
+                    double y_project = spl(x_project);
+                    double dist_project = distance(0.0, 0.0, x_project, y_project);
+
+                    double v_ave = v_ref;
+//                    double dv = (N - prevsize)*dt*accel_max;
+                    double dv = dt*accel_max;
+
+                    if (v_ref < v_target) {
+                        v_ave += 0.5*dv;
+                        v_ave = std::min(v_ave, v_max);
+                    }
+                    else if (v_ref > v_target) {
+                        v_ave -= 0.5*dv;
+                        v_ave = std::max(0.0, v_ave);
                     }
 
+                    double division = dist_project/(v_ave*dt);
+                    double dx = dist_project/division;
+
+                    for (int i = 1; i <= N-prevsize; i++) {
+                        double x_loc = dx*i;
+                        double y_loc = spl(x_loc);
+
+                        double x_glo, y_glo;
+                        x_glo = cos(yaw_ref)*x_loc - sin(yaw_ref)*y_loc;
+                        y_glo = sin(yaw_ref)*x_loc + cos(yaw_ref)*y_loc;
+
+                        x_glo += x_ref;
+                        y_glo += y_ref;
+
+                        next_x_vals.push_back(x_glo);
+                        next_y_vals.push_back(y_glo);
+                    }
+
+                    /*
                     // new waypoints from spline, each about v_ref*dt apart
                     // keep adding until we have N total waypoints
                     // remember: N was chosen so that we plan until a time horizon,
@@ -304,17 +374,20 @@ int main() {
                         double dv = accel_max*dt;
                         double v_ave = v_ref;
                         if (v_ref < v_target) {
-                            v_ave = std::min(v_ref + 0.5*dv, v_max);
+//                            v_ave = std::min(v_ref + 0.5*dv, v_max);
                             v_ref += dv;
                             v_ref = std::min(v_ref, v_max);
                         }
                         else if (v_ref > v_target) {
-                            v_ave = v_ref - 0.5*dv;
+//                            v_ave = v_ref - 0.5*dv;
                             v_ref -= dv;
                         }
 
                         double xf = xi + v_ave*dt*cos(psi);
                         double yf = spl(xf);
+                        psi = atan2(yf-yi, xf-xi);
+                        xf = xi + v_ave*dt*cos(psi);
+                        yf = spl(xf);
 
                         // transform to global frame
                         double xf_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf;
@@ -327,10 +400,16 @@ int main() {
                         next_y_vals.push_back(yf_glo);
 
                         // setup heading for next iteration
-                        psi = atan2(yf-yi, xf-xi);
+//                        psi = atan2(yf-yi, xf-xi);
                         xi = xf;
                         yi = yf;
                     }
+//                    cout << "new path check" << endl;
+
+//                    for (int i = 0; i < next_x_vals.size(); i++) {
+//                        cout << setw(7) << next_x_vals[i] << ", " << setw(7) << next_y_vals[i] << endl;
+//                    }
+                    */
 
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
