@@ -326,12 +326,12 @@ int main() {
                     }
 //                    cout << "prev path check" << endl;
 
+
                     double x_project = 30.0;
                     double y_project = spl(x_project);
                     double dist_project = distance(0.0, 0.0, x_project, y_project);
 
                     double v_ave = v_ref;
-//                    double dv = (N - prevsize)*dt*accel_max;
                     double dv = dt*accel_max;
 
                     if (v_ref < v_target) {
@@ -344,11 +344,25 @@ int main() {
                     }
 
                     double division = dist_project/(v_ave*dt);
-                    double dx = dist_project/division;
+                    double dx = x_project/division;
+                    double x_loc = 0.0;
 
                     for (int i = 1; i <= N-prevsize; i++) {
-                        double x_loc = dx*i;
+                        x_loc += dx;
                         double y_loc = spl(x_loc);
+
+                        if (v_ave < v_target) {
+                            v_ave += dv;
+                            v_ave = std::min(v_ave, v_max);
+                        }
+                        else if (v_ave > v_target) {
+                            v_ave -= dv;
+                            v_ave = std::max(0.0, v_ave);
+                        }
+
+                        dist_project = distance(x_loc, y_loc, x_project, y_project);
+                        division = dist_project/(v_ave*dt);
+                        dx = (x_project-x_loc)/division;
 
                         double x_glo, y_glo;
                         x_glo = cos(yaw_ref)*x_loc - sin(yaw_ref)*y_loc;
@@ -361,55 +375,53 @@ int main() {
                         next_y_vals.push_back(y_glo);
                     }
 
-                    /*
+
                     // new waypoints from spline, each about v_ref*dt apart
                     // keep adding until we have N total waypoints
                     // remember: N was chosen so that we plan until a time horizon,
                     // assuming the car is moving at max speed
-                    double xi = 0.0;
-                    double yi = 0.0;
-                    double psi = 0.0;
-                    for (int i = 1; i <= N-prevsize; i++) {
-//                        double dv = 0.5*jerk_max*dt*dt;
-                        double dv = accel_max*dt;
-                        double v_ave = v_ref;
-                        if (v_ref < v_target) {
-//                            v_ave = std::min(v_ref + 0.5*dv, v_max);
-                            v_ref += dv;
-                            v_ref = std::min(v_ref, v_max);
-                        }
-                        else if (v_ref > v_target) {
-//                            v_ave = v_ref - 0.5*dv;
-                            v_ref -= dv;
-                        }
+//                    double xi = 0.0;
+//                    double yi = 0.0;
+//                    double psi = 0.0;
+//                    for (int i = 0; i < N-prevsize; i++) {
+//                        double dee = v_ref*dt;
+//                        if (dee < 1.0e-3) {
+//                            dee = 0.5*accel_max*dt*dt;
+//                        }
+//                        double dx = dee*cos(psi);
+//                        double xf = xi + dx;
+//                        double yf = spl(xf);
+//                        double dee_inter = distance(xi, yi, xf, yf);
 
-                        double xf = xi + v_ave*dt*cos(psi);
-                        double yf = spl(xf);
-                        psi = atan2(yf-yi, xf-xi);
-                        xf = xi + v_ave*dt*cos(psi);
-                        yf = spl(xf);
+//                        while (dee_inter - dee > 1.0e-3) {
+//                            psi = atan2(yf-yi, dx);
+//                            xf = xi + 0.9*dee_inter*cos(psi);
+//                            yf = spl(xf);
+//                            dee_inter = distance(xi, yi, xf, yf);
+//                            cout << dee << ", " << dee_inter << endl;
+//                        }
 
-                        // transform to global frame
-                        double xf_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf;
-                        double yf_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf;
+//                        if (v_ref < v_target) {
+//                            v_ref += accel_max*dt;
+//                            v_ref = std::min(v_max, v_ref);
+//                        }
+//                        else if (v_ref > v_target) {
+//                            v_ref -= accel_max*dt;
+//                            v_ref = std::max(0.0, v_ref);
+//                        }
 
-                        xf_glo += x_ref;
-                        yf_glo += y_ref;
+//                        double x_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf;
+//                        double y_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf;
 
-                        next_x_vals.push_back(xf_glo);
-                        next_y_vals.push_back(yf_glo);
+//                        x_glo += x_ref;
+//                        y_glo += y_ref;
 
-                        // setup heading for next iteration
-//                        psi = atan2(yf-yi, xf-xi);
-                        xi = xf;
-                        yi = yf;
-                    }
-//                    cout << "new path check" << endl;
+//                        next_x_vals.push_back(x_glo);
+//                        next_y_vals.push_back(y_glo);
 
-//                    for (int i = 0; i < next_x_vals.size(); i++) {
-//                        cout << setw(7) << next_x_vals[i] << ", " << setw(7) << next_y_vals[i] << endl;
+//                        xi = xf;
+//                        yi = yf;
 //                    }
-                    */
 
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
