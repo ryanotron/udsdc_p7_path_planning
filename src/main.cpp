@@ -96,30 +96,40 @@ int main() {
 
                     json msgJson;
 
-                    /**
-                     * TODO: define a path made up of (x,y) points that the car will visit
-                     *   sequentially every .02 seconds
-                     */
-
-//                    cout << "new cycle: " << car_s << ", " << car_d << endl;
+                    // START PARAMETERS ============================================+
                     double max_s = 6945.554;
-                    double v_max = 0.95 * 50.0 * 1609.34 / 3600;
-//                    double jerk_max = 0.95*50;
-                    double accel_max = 0.95*10;
+                    double v_max = 0.99 * 50.0 * 1609.34 / 3600;
+                    double accel_max = 0.50*10;
+
+                    double t_horz = 0.8;
+                    double dt = 20.0e-3;
+                    double dist_min = 30.0;
+                    // END PARAMETERS ===============================================
 
                     static double v_target = v_max;
                     static int lane = 1;
                     int prev_lane = lane;
 
-                    double t_horz = 0.6;
-                    double dt = 20.0e-3;
-//                    double dist_min = 3*v_max*t_horz; // minimum distance to car ahead before slowing down
-                    double dist_min = 30.0;
-
                     double v_ref;
                     int N = (int) (t_horz/dt);
 
                     vector<double> v_target_lanes (3, 5*v_max);
+
+                    int prevsize = previous_path_x.size();
+                    vector<double> next_x_vals;
+                    vector<double> next_y_vals;
+
+                    for (int i = 0; i < prevsize; i++) {
+                        try {
+                            next_x_vals.push_back(previous_path_x[i]);
+                            next_y_vals.push_back(previous_path_y[i]);
+                        }
+                        catch (json::type_error& e) {
+                            cout << endl << endl << "NO!" << " " << e.what() << endl << endl;
+                            prevsize = i;
+                            break;
+                        }
+                    }
 
                     for (int i = 0; i < sensor_fusion.size(); i++) {
                         auto carspec = sensor_fusion[i];
@@ -167,7 +177,15 @@ int main() {
                         // other car is already ahead, think about if it's safe to go behind it
                         if (ess > car_s) {
                             double v_lane = (ess_expect - dist_min - car_s)/t_horz;
-                            v_lane = std::max(v_lane, 0.0);
+
+                            if (v_lane < 0) {
+                                if (carlane == lane) {
+                                    v_lane = vee;
+                                }
+                                else {
+                                    v_lane = 0.0;
+                                }
+                            }
 
                             if (v_lane < v_target_lanes[carlane]) {
                                 v_target_lanes[carlane] = v_lane;
@@ -175,19 +193,16 @@ int main() {
                         }
                         // other car is behind, but will be ahead, think about if it's safe to go in front of it
                         else if (ess_expect > car_s) {
-                            double v_lane = (ess_expect + 0.5*dist_min - car_s)/t_horz;
+                            double v_lane = (ess_expect + 0.50*dist_min - car_s)/t_horz;
                             if (v_lane > v_max) {
                                 v_lane = 0.0;
-                            }
-                            if (v_lane < v_target_lanes[carlane]) {
-                                v_target_lanes[carlane] = v_lane;
                             }
                         }
                     }
 
-                    cout << lane << ": " << setw(9) << setprecision(8) << car_s << " --- ";
+                    cout << "lane: " << lane << ", speed: " << setw(8) << setprecision(6) << car_speed << " --- lane limits: ";
                     for (int i = 0; i < v_target_lanes.size(); i++) {
-                        cout << setw(6) << setprecision(5) << v_target_lanes[i]*3600.0/1609.34 << " ";
+                        cout << setw(8) << setprecision(6) << v_target_lanes[i]*3600.0/1609.34 << " ";
                     }
                     cout << endl;
 
@@ -198,7 +213,7 @@ int main() {
                         for (int i = 0; i < 2; i++) {
                             int nix = lane + neighbours[i];
                             if (nix >= 0 && nix <= 2) {
-                                if (v_target_lanes[nix] > 1.5*v_target_lanes[lane]) {
+                                if (v_target_lanes[nix] > 1.5*v_target_lanes[best_lane]) {
                                     best_lane = nix;
                                 }
                             }
@@ -210,11 +225,6 @@ int main() {
                         prev_lane = lane;
                         lane = best_lane;
                     }
-
-                    // Regardless of target lane, car speed reference follows actual lane.
-                    // We need this to not hit car ahead during lane change
-//                    int actual_lane = (int) floor(car_d / 4);
-//                    v_target = std::min(v_target_lanes[actual_lane], v_max);
                     v_target = std::min(v_target_lanes[lane], v_max);
 
                     double next_d = lane*4 + 2;
@@ -227,9 +237,8 @@ int main() {
                     // prepare first two anchor points for spline
                     // if we have enough previous path, use those,
                     // otherwise, infer car pose just before current pose
-                    int prevsize = previous_path_x.size();
+
                     if (lane != prev_lane) {
-//                        prevsize = 0;
                         N = 2*N;
                     }
                     if (prevsize >= 2) {
@@ -306,25 +315,6 @@ int main() {
                     // setup next waypoints
                     // start with remaining previous waypoints,
                     // then add new ones from the spline
-                    vector<double> next_x_vals;
-                    vector<double> next_y_vals;
-
-                    for (int i = 0; i < prevsize; i++) {
-//                        cout << i << "/" << prevsize << " " << previous_path_x[i] << ", " << previous_path_y[i] << endl;
-                        try {
-                            double dumx = (double) previous_path_x[i] - 1.0;
-                            double dumy = (double) previous_path_y[i] - 1.0;
-//                            cout << dumx << ", " << dumy << endl;
-                        }
-                        catch (json::type_error& e) {
-                            cout << "NO!" << " " << e.what() << endl;
-                            continue;
-                        }
-                        next_x_vals.push_back(previous_path_x[i]);
-                        next_y_vals.push_back(previous_path_y[i]);
-
-                    }
-//                    cout << "prev path check" << endl;
 
 
                     double x_project = 30.0;
@@ -374,6 +364,52 @@ int main() {
                         next_x_vals.push_back(x_glo);
                         next_y_vals.push_back(y_glo);
                     }
+
+                    double d1, d2, d3;
+                    double x0, x1, x2, x3, y0, y1, y2, y3;
+                    x0 = next_x_vals[0];
+                    y0 = next_y_vals[0];
+                    x1 = next_x_vals[1];
+                    y1 = next_y_vals[1];
+                    x2 = next_x_vals[2];
+                    y2 = next_y_vals[2];
+
+                    d1 = distance(x0, y0, x1, y1);
+                    d2 = distance(x1, y1, x2, y2);
+
+                    double accmax = 0.0;
+                    double accmin = 0.0;
+
+                    for (int i = 3; i < next_x_vals.size(); i++) {
+                        x3 = next_x_vals[i];
+                        y3 = next_y_vals[i];
+
+                        d3 = distance(x2, y2, x3, y3);
+                        double accel = (d3 - 2*d2 + d1)/(dt*dt);
+                        if (accel > accmax) {
+                            accmax = accel;
+                        }
+                        else if (accel < accmin) {
+                            accmin = accel;
+                        }
+
+                        x0 = x1;
+                        y0 = y1;
+                        x1 = x2;
+                        y1 = y2;
+                        x2 = x3;
+                        y2 = y3;
+                        d1 = d2;
+                        d2 = d3;
+                    }
+//                    cout << "accels: " << setw(6) << setprecision(4) << accmin << ", ";
+//                    cout << setw(6) << setprecision(4) << accmax << endl;
+
+                    // Uncomment next block to debug next waypoint generation
+//                    for (int i = 0; i < next_x_vals.size(); i++) {
+//                        cout << i << ": " << next_x_vals[i] << ", " << next_y_vals[i] << endl;
+//                    }
+//                    cout << "---" << endl;
 
 
                     // new waypoints from spline, each about v_ref*dt apart
