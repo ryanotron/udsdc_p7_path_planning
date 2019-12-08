@@ -16,6 +16,7 @@ using std::string;
 using std::vector;
 using std::cout;
 using std::endl;
+using std::fixed;
 using std::setprecision;
 using std::setw;
 
@@ -98,12 +99,14 @@ int main() {
 
                     // START PARAMETERS ============================================+
                     double max_s = 6945.554;
-                    double v_max = 0.99 * 50.0 * 1609.34 / 3600;
-                    double accel_max = 0.50*10;
+                    double v_max = 49.0 * 1609.34 / 3600;
+                    double accel_max = 0.95*10;
 
                     double t_horz = 0.8;
                     double dt = 20.0e-3;
-                    double dist_min = 30.0;
+                    double dist_min = 1.5*v_max*t_horz;
+
+                    double anchor_step = 30.0;
                     // END PARAMETERS ===============================================
 
                     static double v_target = v_max;
@@ -174,9 +177,16 @@ int main() {
                             ess += max_s;
                         }
 
+//                        cout << "sense: " << carlane << ", " << ess << ", " << ess_expect << ", " << car_s << endl;
+
+                        double v_lane;
+                        if ((fabs(car_s - ess) < 0.5*dist_min) && (carlane != lane)) {
+                            v_lane = 0.0;
+                            v_target_lanes[carlane] = v_lane;
+                        }
                         // other car is already ahead, think about if it's safe to go behind it
-                        if (ess > car_s) {
-                            double v_lane = (ess_expect - dist_min - car_s)/t_horz;
+                        else if (ess > car_s) {
+                            v_lane = (ess_expect - dist_min - car_s)/t_horz;
 
                             if (v_lane < 0) {
                                 if (carlane == lane) {
@@ -191,18 +201,23 @@ int main() {
                                 v_target_lanes[carlane] = v_lane;
                             }
                         }
-                        // other car is behind, but will be ahead, think about if it's safe to go in front of it
-                        else if (ess_expect > car_s) {
-                            double v_lane = (ess_expect + 0.50*dist_min - car_s)/t_horz;
-                            if (v_lane > v_max) {
+                        // Other car is behind, but may be ahead, think about if it's safe to go in front of it.
+                        // If we can get a set distance ahead of its expected position within current speed, it's save
+                        else {
+                            v_lane = (ess_expect + 2.0*dist_min - car_s)/t_horz;
+                            // if it is too close, short circuit to zero
+
+                            if (v_lane > v_target) {
                                 v_lane = 0.0;
                             }
                         }
                     }
 
-                    cout << "lane: " << lane << ", speed: " << setw(8) << setprecision(6) << car_speed << " --- lane limits: ";
+                    cout << "ln: " << lane << ", progress: ";
+                    cout << setw(6) << fixed << setprecision(3) << car_s/1000.0 << "/" << max_s/1000.0;
+                    cout << " --- limits: ";
                     for (int i = 0; i < v_target_lanes.size(); i++) {
-                        cout << setw(8) << setprecision(6) << v_target_lanes[i]*3600.0/1609.34 << " ";
+                        cout << setw(8) << fixed << setprecision(2) << v_target_lanes[i]*3600.0/1609.34 << " ";
                     }
                     cout << endl;
 
@@ -219,11 +234,15 @@ int main() {
                             }
                         }
 
+                        // Change lane if there is a better one, but only if we're pretty settled in our current one
                         if (best_lane != lane) {
-                            cout << "move to lane " << best_lane << " from " << lane << endl << endl;
+                            double actual_d = lane*4.0 + 2.0;
+                            if (fabs(actual_d - car_d) < 0.5) {
+                                cout << "move to lane " << best_lane << " from " << lane << endl << endl;
+                                prev_lane = lane;
+                                lane = best_lane;
+                            }
                         }
-                        prev_lane = lane;
-                        lane = best_lane;
                     }
                     v_target = std::min(v_target_lanes[lane], v_max);
 
@@ -234,40 +253,35 @@ int main() {
 
                     double x_ref, y_ref, yaw_ref;
 
+                    if (lane != prev_lane) {
+//                        N = 2*N;
+                        anchor_step = 1.5*anchor_step;
+//                        accel_max = 0.75*accel_max;
+                    }
+
                     // prepare first two anchor points for spline
                     // if we have enough previous path, use those,
                     // otherwise, infer car pose just before current pose
-
-                    if (lane != prev_lane) {
-                        N = 2*N;
-                    }
                     if (prevsize >= 2) {
                         x_ref = previous_path_x[prevsize-1];
                         y_ref = previous_path_y[prevsize-1];
-
                         double x_ref_prev = previous_path_x[prevsize-2];
                         double y_ref_prev = previous_path_y[prevsize-2];
-
                         yaw_ref = atan2(y_ref-y_ref_prev, x_ref-x_ref_prev);
-
                         v_ref = distance(x_ref, y_ref, x_ref_prev, y_ref_prev)/dt;
 
-//                        anchors_x.push_back(previous_path_x[0]);
                         anchors_x.push_back(x_ref_prev);
                         anchors_x.push_back(x_ref);
-//                        anchors_y.push_back(previous_path_y[0]);
                         anchors_y.push_back(y_ref_prev);
                         anchors_y.push_back(y_ref);
                     }
                     else {
                         x_ref = car_x;
                         y_ref = car_y;
-                        yaw_ref = deg2rad(car_yaw);
-
-                        v_ref = car_speed;
-
                         double x_ref_prev = x_ref - cos(yaw_ref);
                         double y_ref_prev = y_ref - sin(yaw_ref);
+                        yaw_ref = deg2rad(car_yaw);
+                        v_ref = car_speed;
 
                         anchors_x.push_back(x_ref_prev);
                         anchors_x.push_back(x_ref);
@@ -278,14 +292,13 @@ int main() {
                     // add more anchors from several meters ahead in frenet frame
                     // choose something that's guaranteed to be ahead of the last on the
                     // previous path, so that the anchors x are monotonicly increasing
-                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x,
-                                                      map_waypoints_y);
+                    vector<double> sd_ref = getFrenet(x_ref, y_ref, yaw_ref, map_waypoints_x, map_waypoints_y);
 
-                    vector<double> anchor_xy0 = getXY(sd_ref[0]+30, next_d, map_waypoints_s,
+                    vector<double> anchor_xy0 = getXY(sd_ref[0]+anchor_step, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy1 = getXY(sd_ref[0]+60, next_d, map_waypoints_s,
+                    vector<double> anchor_xy1 = getXY(sd_ref[0]+2*anchor_step, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
-                    vector<double> anchor_xy2 = getXY(sd_ref[0]+90, next_d, map_waypoints_s,
+                    vector<double> anchor_xy2 = getXY(sd_ref[0]+3*anchor_step, next_d, map_waypoints_s,
                                                       map_waypoints_x, map_waypoints_y);
 
                     anchors_x.push_back(anchor_xy0[0]);
@@ -312,11 +325,7 @@ int main() {
                     tk::spline spl;
                     spl.set_points(anchors_x, anchors_y);
 
-                    // setup next waypoints
-                    // start with remaining previous waypoints,
-                    // then add new ones from the spline
-
-
+                    // setup additional waypoints from spline
                     double x_project = 30.0;
                     double y_project = spl(x_project);
                     double dist_project = distance(0.0, 0.0, x_project, y_project);
@@ -324,11 +333,11 @@ int main() {
                     double v_ave = v_ref;
                     double dv = dt*accel_max;
 
-                    if (v_ref < v_target) {
+                    if (v_ref + dv < v_target) {
                         v_ave += 0.5*dv;
                         v_ave = std::min(v_ave, v_max);
                     }
-                    else if (v_ref > v_target) {
+                    else if (v_ref - dv > v_target) {
                         v_ave -= 0.5*dv;
                         v_ave = std::max(0.0, v_ave);
                     }
@@ -341,11 +350,11 @@ int main() {
                         x_loc += dx;
                         double y_loc = spl(x_loc);
 
-                        if (v_ave < v_target) {
+                        if (v_ave + dv < v_target) {
                             v_ave += dv;
                             v_ave = std::min(v_ave, v_max);
                         }
-                        else if (v_ave > v_target) {
+                        else if (v_ave - dv > v_target) {
                             v_ave -= dv;
                             v_ave = std::max(0.0, v_ave);
                         }
@@ -365,7 +374,8 @@ int main() {
                         next_y_vals.push_back(y_glo);
                     }
 
-                    double d1, d2, d3;
+                    // calculate instantaneous acceleration in next set of waypoints
+                    // this doesn't actually work
                     double x0, x1, x2, x3, y0, y1, y2, y3;
                     x0 = next_x_vals[0];
                     y0 = next_y_vals[0];
@@ -374,23 +384,49 @@ int main() {
                     x2 = next_x_vals[2];
                     y2 = next_y_vals[2];
 
-                    d1 = distance(x0, y0, x1, y1);
-                    d2 = distance(x1, y1, x2, y2);
+                    double dx1, dy1, dx2, dy2, dx3, dy3;
+                    double vx1, vx2, vx3, vy1, vy2, vy3;
+                    double ax, ay, a1;
 
-                    double accmax = 0.0;
-                    double accmin = 0.0;
+                    dx1 = x1 - x0;
+                    dy1 = y1 - y0;
+                    dx2 = x2 - x1;
+                    dy2 = y2 - y1;
+
+                    vx1 = dx1/dt;
+                    vy1 = dy1/dt;
+
+                    vx2 = dx2/dt;
+                    vy2 = dy2/dt;
+
+                    ax = (vx2 - vx1)/dt;
+                    ay = (vy2 - vy1)/dt;
+
+                    a1 = sqrt(ax*ax + ay*ay);
+
+                    double accmax = a1;
+                    double accmin = a1;
 
                     for (int i = 3; i < next_x_vals.size(); i++) {
                         x3 = next_x_vals[i];
                         y3 = next_y_vals[i];
 
-                        d3 = distance(x2, y2, x3, y3);
-                        double accel = (d3 - 2*d2 + d1)/(dt*dt);
-                        if (accel > accmax) {
-                            accmax = accel;
+                        dx3 = x3 - x2;
+                        dy3 = y3 - y2;
+
+                        vx3 = dx3/dt;
+                        vy3 = dy3/dt;
+
+                        ax = (vx3 - vx2)/dt;
+                        ay = (vy3 - vy2)/dt;
+
+                        a1 = sqrt(ax*ax + ay*ay);
+
+                        if (a1> accmax) {
+                            accmax = a1;
                         }
-                        else if (accel < accmin) {
-                            accmin = accel;
+                        else if (a1 < accmin) {
+                            accmin = a1;
                         }
 
                         x0 = x1;
@@ -399,65 +435,15 @@ int main() {
                         y1 = y2;
                         x2 = x3;
                         y2 = y3;
-                        d1 = d2;
-                        d2 = d3;
+
+                        dx2 = x2 - x1;
+                        dy2 = y2 - y1;
+
+                        vx2 = dx2/dt;
+                        vy2 = dy2/dt;
                     }
 //                    cout << "accels: " << setw(6) << setprecision(4) << accmin << ", ";
 //                    cout << setw(6) << setprecision(4) << accmax << endl;
-
-                    // Uncomment next block to debug next waypoint generation
-//                    for (int i = 0; i < next_x_vals.size(); i++) {
-//                        cout << i << ": " << next_x_vals[i] << ", " << next_y_vals[i] << endl;
-//                    }
-//                    cout << "---" << endl;
-
-
-                    // new waypoints from spline, each about v_ref*dt apart
-                    // keep adding until we have N total waypoints
-                    // remember: N was chosen so that we plan until a time horizon,
-                    // assuming the car is moving at max speed
-//                    double xi = 0.0;
-//                    double yi = 0.0;
-//                    double psi = 0.0;
-//                    for (int i = 0; i < N-prevsize; i++) {
-//                        double dee = v_ref*dt;
-//                        if (dee < 1.0e-3) {
-//                            dee = 0.5*accel_max*dt*dt;
-//                        }
-//                        double dx = dee*cos(psi);
-//                        double xf = xi + dx;
-//                        double yf = spl(xf);
-//                        double dee_inter = distance(xi, yi, xf, yf);
-
-//                        while (dee_inter - dee > 1.0e-3) {
-//                            psi = atan2(yf-yi, dx);
-//                            xf = xi + 0.9*dee_inter*cos(psi);
-//                            yf = spl(xf);
-//                            dee_inter = distance(xi, yi, xf, yf);
-//                            cout << dee << ", " << dee_inter << endl;
-//                        }
-
-//                        if (v_ref < v_target) {
-//                            v_ref += accel_max*dt;
-//                            v_ref = std::min(v_max, v_ref);
-//                        }
-//                        else if (v_ref > v_target) {
-//                            v_ref -= accel_max*dt;
-//                            v_ref = std::max(0.0, v_ref);
-//                        }
-
-//                        double x_glo = cos(yaw_ref)*xf - sin(yaw_ref)*yf;
-//                        double y_glo = sin(yaw_ref)*xf + cos(yaw_ref)*yf;
-
-//                        x_glo += x_ref;
-//                        y_glo += y_ref;
-
-//                        next_x_vals.push_back(x_glo);
-//                        next_y_vals.push_back(y_glo);
-
-//                        xi = xf;
-//                        yi = yf;
-//                    }
 
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
