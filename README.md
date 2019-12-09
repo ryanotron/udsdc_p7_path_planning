@@ -1,152 +1,242 @@
-# CarND-Path-Planning-Project
+# **Highway Path Planning**
 
-Forked from starter code in [https://github.com/udacity/CarND-Path-Planning-Project](https://github.com/udacity/CarND-Path-Planning-Project).
+![ten miles](./ten_miles.png)
 
-Spline library from [https://kluge.in-chemnitz.de/opensource/spline](https://kluge.in-chemnitz.de/opensource/spline).
+# Overview
 
-Spline 
+This project implements highway path planning for Udacity Self-Driving Car Nanodegree project. The highway is a ~7 [km] loop with three lanes and other cars moving with their own logics. The plan must cause the car to traverse the loop as quickly as possible without violating speed, acceleration, and jerk limits (50 [mph], 10 [m/s^2], and 10 [m/s^3] respectively. The car must perform this without hitting other cars, without straddling lanes for longer than necessary, and without straying off road or to the opposite direction traffic.
 
-Self-Driving Car Engineer Nanodegree Program
-   
-### Simulator.
-You can download the Term3 Simulator which contains the Path Planning Project from the [releases tab (https://github.com/udacity/self-driving-car-sim/releases/tag/T3_v1.2).  
+![map](./waypoints.png)
+Highway map, blue dots are map waypoints, red dot is the first waypoint
 
-To run the simulator on Mac/Linux, first make the binary file executable with the following command:
-```shell
-sudo chmod u+x {simulator_file_name}
+![histogram](./wp_histogram.png)
+Distribution of distance in *sd*-frame of map waypoints.
+
+# Building and Running
+
+This program uses CMake. To build it in a `build` folder, do
+
+```bash
+$ mkdir build && cd build
+$ cmake ..
+$ make
 ```
 
-### Goals
-In this project your goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. You will be provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 10 m/s^3.
+Afterwards, run it with
 
-#### The map of the highway is in data/highway_map.txt
-Each waypoint in the list contains  [x,y,s,dx,dy] values. x and y are the waypoint's map coordinate position, the s value is the distance along the road to get to that waypoint in meters, the dx and dy values define the unit normal vector pointing outward of the highway loop.
+```bash
+$ ./path_planning
+```
 
-The highway's waypoints loop around so the frenet s value, distance along the road, goes from 0 to 6945.554.
+It will wait for the simulator to be ready. Get the term3 simulator from [here](https://github.com/udacity/self-driving-car-sim/releases/tag/T3_v1.2).
 
-## Basic Build Instructions
+# Lane following
 
-1. Clone this repo.
-2. Make a build directory: `mkdir build && cd build`
-3. Compile: `cmake .. && make`
-4. Run it: `./path_planning`.
+When following a lane, we generate waypoints with splines. The splines are built around anchor points picked from current car location or waypoints from a preceding cycle, and spaced out points further along the highway. The built splines are then sampled for points along it, spaced at a distance equals to the car's current speed multiplied by the fixed time sample (20 [ms]).
 
-Here is the data provided from the Simulator to the C++ Program
+To avoid collisions with other cars ahead of ours, the waypoints are generated such that our car is always at least a set distance behind the closest leading car, and its target speed matches the measured speed of the lead car, if lower than the maximum allowable speed.
 
-#### Main car's localization Data (No Noise)
+Planning is done up to a time horizon. Here it is chosen to be 800 [ms].
 
-["x"] The car's x position in map coordinates
+We will discuss the implementation details in the next subsections.
 
-["y"] The car's y position in map coordinates
+## Generating paths
 
-["s"] The car's s position in frenet coordinates
+At the beginning of a planning cycle, we estimate the speed and heading of our car at the end of the previous planning cycle using the last two points `(x', y')` and `(x'', y'')` from said previous planning cycle. We also save the *xy*-coordinate at the last waypoint as reference for coordinate transformation later.
 
-["d"] The car's d position in frenet coordinates
+```
+vx = (x' - x'')/dt
+vy = (y' - y'')/dt
+v_ref = sqrt(vx^2 + vy^2)
+yaw_ref = arctan((y' - y'')/(x' - x''))
+x_ref = x'
+y_ref = y'
+```
 
-["yaw"] The car's yaw angle in the map
+In the initial planning cycle, or when there is not enough points from the previous planning cycle, we take the reported current car speed and heading from the simulator, and estimate the previous location instead.
 
-["speed"] The car's speed in MPH
+```
+x' = car_x
+y' = car_y
+x_ref = x'
+y_ref = y'
 
-#### Previous path data given to the Planner
+v_ref = car_speed
+yaw_ref = car_yaw
 
-//Note: Return the previous list but with processed points removed, can be a nice tool to show how far along
-the path has processed since last time. 
+x'' = x' - cos(car_yaw)
+y'' = y' - sin(car_yaw)
+```
 
-["previous_path_x"] The previous list of x points previously given to the simulator
+The last two points, `(x', y')` and `(x'', y'')`, however they are generated are used as the first two points in the anchor.
 
-["previous_path_y"] The previous list of y points previously given to the simulator
+```
+anchor_x = [x'', x']
+anchor_y = [y'', y']
+```
 
-#### Previous path's end s and d values 
+Then, three more anchor points are added, the first one an `anchor_step` away from the final point in the previous plan one in the *sd*-coordinate (said differently, an `anchor_step` distance further along the highway). The second is an `anchor_step` further from the first, and similarly with the third. The variable `anchor_step` is set to be 30 [m] in normal conditions (close to the average distance between two consecutive waypoints in the map). It is adjusted when changing lanes, as we will discuss in its section later. They are then transformed to *xy*-coordinate using the `getXY` funtion provided in the starter code. The final set of anchor points looks like:
 
-["end_path_s"] The previous list's last point's frenet s value
+```
+anchor_x = [x'', x', x30, x60, x90]
+anchor_y = [y'', y', y30, y60, y90]
+```
 
-["end_path_d"] The previous list's last point's frenet d value
+The final point in *sd*-frame is calculated from `(x', y')` using the `getFrenet` function provided in the helper header of the starter code. 
 
-#### Sensor Fusion Data, a list of all other car's attributes on the same side of the road. (No Noise)
+The five anchors are then transformed into the car-local frame of reference (with `x_ref`, `y_ref`, and `yaw_ref` calculated earlier), so that the second anchor point `(x', y')` is transformed to `(0.0, 0.0)`.
 
-["sensor_fusion"] A 2d vector of cars and then that car's [car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates. 
+The anchor points in car-local frame are then made into spline, where we can query it with an `x` value and get a corresponding `y` value (all in car-local frame). Our next task is then to decide the spacing of our `x` queries such that the resulting points can be visited by the car every 20 [ms] without violating the speed, acceleration, and jerk limits.
 
-## Details
+First, we project the `x` value in car-local frame a set distance ahead (30 [m]), let's call this `x30`. Then, we ask the spline what `y30 = spline(x=30)` is. Next, we calculate the distance from the origin of the car-local frame to `(x30, y30)`, let's label this `d30`.
 
-1. The car uses a perfect controller and will visit every (x,y) point it recieves in the list every .02 seconds. The units for the (x,y) points are in meters and the spacing of the points determines the speed of the car. The vector going from a point to the next point in the list dictates the angle of the car. Acceleration both in the tangential and normal directions is measured along with the jerk, the rate of change of total Acceleration. The (x,y) point paths that the planner recieves should not have a total acceleration that goes over 10 m/s^2, also the jerk should not go over 50 m/s^3. (NOTE: As this is BETA, these requirements might change. Also currently jerk is over a .02 second interval, it would probably be better to average total acceleration over 1 second and measure jerk from that.
+Suppose our car moves at speed `v_target` in a straight line from car-local origin to `(x30, y30)`. The number of 20 [ms] segments along this distance is then `N = d30/(v_target*20e-3)`. We then divide the `x`-axis into the same number of segments, so each would be of length `dx = (x30-0)/N`. If our car is moving at constant speed, we sample the spline at this interval, such that
 
-2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this its a good idea to store the last points you have used so you can have a smooth transition. previous_path_x, and previous_path_y can be helpful for this transition since they show the last points given to the simulator controller with the processed points already removed. You would either return a path that extends this previous path or make sure to create a new path that has a smooth transition with this last path.
+```
+x_points = [0, dx, 2*dx, 3*dx, ...]
+y_points = [0, spline(dx), spline(2*dx), ...]
+```
 
-## Tips
+We transfer these points to the global *xy*-frame, prepend points from the previous path, then send it over to the simulator. However, we would like our car to be able to accelerate, so let's extend this method to allow that.
 
-A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file is really easy to use.
+The initial step is the same, we calculate `x30`, `y30`, `d30`, `N`, and `dx` with the same process, except instead of `v_target`, we use the estimated car speed at the end of the previous path, calculated earlier as `v_ref`.
 
----
+Let us call the current end of the generated path as `(xf, yf)`. At this stage, they are `(0+dx, spline(dx))`.
 
-## Dependencies
+Also, let us call the maximum acceleration allowed `a_max`. We can go further and define `jerk_max` instead, but experiments show that setting `a_max` does not result in jerk limit violation in the simulator, so we keep it simple.
 
-* cmake >= 3.5
-  * All OSes: [click here for installation instructions](https://cmake.org/install/)
-* make >= 4.1
-  * Linux: make is installed by default on most Linux distros
-  * Mac: [install Xcode command line tools to get make](https://developer.apple.com/xcode/features/)
-  * Windows: [Click here for installation instructions](http://gnuwin32.sourceforge.net/packages/make.htm)
-* gcc/g++ >= 5.4
-  * Linux: gcc / g++ is installed by default on most Linux distros
-  * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
-  * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets 
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
+The remaining distance to `(x30, y30)` is then 
 
-## Editor Settings
+```
+d30' = distance((xf, yf), (x30, y30))
+```
 
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
+If our current speed is lower than maximum allowed, we use the intervening 20 [ms] to accelerate as much as possible, so 
 
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
+```
+v_ref' = v_ref + a_max*20e-3
+```
 
-## Code Style
+Similarly, if our current speed is higher than maximum allowed, we deccelerate as much as possible, 
 
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
+```
+v_ref' = v_ref - a_max*20e-3
+```
 
-## Project Instructions and Rubric
+We use this new speed to calculate a new `N` from the remaining distance
 
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
+```
+N' = d30' / (v_ref' * 20e-3)
+```
 
+Then we divide the remaining *x*-axis into `N'` segments
 
-## Call for IDE Profiles Pull Requests
+```
+dx' = (x30 - xf)/N'
+xf' = xf + dx'
+```
 
-Help your fellow students!
+And find the corresponding *y*
 
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to ensure
-that students don't feel pressured to use one IDE or another.
+```
+yf' = spline(xf')
+```
 
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
+We continue the process until we have generated enough points. Then we transfer them to the global *xy*-frame, prepend points from previous path to the list, and send them along to the simulator.
 
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
+## Avoiding collisions
 
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
+To avoid collision with a leading car in the same lane, we adjust the target speed of our car `v_target`. When there is no leading car, this value is set to maximum speed (49 mph, 1 mph lower than the absolute max of 50 for some wiggle room).
 
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
+For cars detected through sensor fusion (in this case, the `sensor_fusion` variable given by the simulator), we have its position and speed in both *xy* and *sd* coordinates. To calculate the lane number of a detected car (say, other-car), we use its *d*-coordinate:
 
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
+```
+other_lane = floor(other_d / 4)
+```
 
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
+If the other-car is in the same lane as our car, then it is of interest to us. First, check that it is ahead from us `other_s > car_s`. Then, project its position at the horizon of our planning window
 
+```
+other_s_expect = other_s + other_v * t_horizon
+```
+
+Define a minimum distance `dist_min` we want to keep our car from a leading other-car. Now, we can calculate the maximum speed our car can move in while maintaining that distance
+
+```
+v_lane = (other_s_expect - dist_min - car_s)/t_horizon
+```
+
+If `v_lane` is higher than maximum allowed speed, then the lead other-car is far enough ahead that we can continue to move at maximum speed. If it is lower than zero, then our car is already closer than the minimum distance, in which case, we match the other car's speed instead.
+
+We do this calculation for each detected car in the same lane our car is in, and take `v_lane` to be the lowest of all, then we set our car's target speed `v_target = v_lane`. The waypoint calculation described in previous subsection will take care of achieving this speed without break acceleration limits.
+
+# Changing lanes
+
+When our car cannot move at maximum speed in its current lane because of a slow lead other-car, we should consider moving to other lanes. In this implementation, we would plan lane change only for one lane at a time. So lane change from centre to left or right is considered, but from leftmost to rightmost is not. However, it may be the case that after a left-centre shift, the right lane is judged to be advantageous and a centre-right shift is immediately planned and executed.
+
+We will discuss picking the most advantageous lane and executing a lane change in the next two subsections.
+
+## Picking the best lane
+
+The value of a lane is its maximum speed. The larger the achievable maximum speed in a lane, the *better* it is.
+
+For the purpose of lane picking, every lane is assigned maximum speed of 5 times `v_max`. The car planner would still respect `v_max`.
+
+For each detected other-car, their position and speed informs the maximum speed of their respective lane. For other-cars ahead of our car in the *sd*-frame, the maximum speed of their lane is how fast our car can move in order to arrive at `dist_min` behind them at the end of the planning horizon:
+
+```
+v_max_lane = (other_s_expect - dist_min - car_s)/t_horz
+```
+
+When there are multiple other-cars detected ahead in a lane, the final `v_max_lane` is the lowest. 
+
+On the other hand, for each detected other-car in behind our car in *different* lanes, we have to calculate the *minimum* speed we have to move in in order to not hit them when changing lane:
+
+```
+v_min_lane = (other_s_expect + 2*dist_min - car_s)/t_horz
+```
+
+When this value is larger than the current `v_target`, then we risk hitting the car in front of us when changing lane. Naturally, `v_target <= v_max`. In this case, we want to forbid the car from picking this lane, even if it is empty ahead, until we have moved far enough ahead of the other-car. We do this by setting `v_max_lane = 0`.
+
+Finally, we add a safety short-circuit for other-cars in different lanes that are close enough to our car in *sd*-coordinate: if their absolute s-distance is lower than half `dist_min`, then we forbid lane change by setting their respective `v_max_lane = 0`.
+
+The calculation for maximum lane speed is done for every lane for every cycle, but we would only change our car's (target) lane to the best lane if it is not currently moving at `v_max` and the new target lane has a sufficiently high maximum speed, `v_lane > 1.5 v_target`.
+
+## Executing lane change
+
+To execute lane change, we change the `lane` variable to the new lane, and multiply the `anchor_step` by 1.5. Both would generate spline anchors transitioning from current lane to the next (better) lane and the usual path generation method will take care of the rest. The `anchor_step` multiplier makes the anchors further ahead and thus the curve easier, this reduces the risk of the car violating the maximum acceleration criterion when changing lanes (actual value was found from trial and error).
+
+# Miscellaneous
+
+## Status printout
+
+For every planning cycle, the program produces a line of status printout in this format:
+
+```
+ln <lane>, progress <car_s/max_s> --- limits: <ln0 v_max> <ln1 v_max> <ln3 v_max>
+```
+
+For example, this line
+
+```
+ln: 2, progress:  2.302/6.946 --- limits:     0.00     0.00    35.58
+```
+
+would mean that the car is in lane 2, at 2.302 [km] from start, and the lane speed limits are 0.0, 0.0, and 35.58 [m/s]. This implies that the car is following a lead car in lane 2 and the other two lanes are congested with other-cars.
+
+Laps are not taken into account. The example line is taken from the moment of the screenshot at the top of this document, so actual progress from start of program is really about 16 [km].
+
+## Avenues for improvement
+
+These might lead to improvement to the current behaviour and worth trying out:
+
+- implement finite-state machine for car behaviour; e.g. lane following state, lane changing state, etc
+- use minimum jerk trajectory instead of splines; more involved, but position, velocities, and acceleration can be set explicitly for each anchor
+
+# Externs
+
+These projects are used in the building of this work:
+
+- Path planning project [starter code](https://github.com/udacity/CarND-Path-Planning-Project)
+- [Simulator](https://github.com/udacity/self-driving-car-sim/releases/tag/T3_v1.2)
+- [Spline](https://kluge.in-chemnitz.de/opensource/spline/)
